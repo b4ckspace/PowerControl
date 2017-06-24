@@ -99,12 +99,11 @@ bool relaisOffHandler(TinyWebServer& web_server) {
 }
 
 void connectMqtt() {
-  while (!mqttClient.connected()) {
+  if (!mqttClient.connected()) {
+    
     if (mqttClient.connect(HOSTNAME, MQTT_TOPIC_LAST_WILL, 1, true, "disconnected")) {
       Serial.println("MQTT connected");
       mqttClient.publish(MQTT_TOPIC_LAST_WILL, "connected", true);
-    } else {
-      delay(1000);
     }
   }
 }
