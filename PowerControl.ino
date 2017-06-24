@@ -112,9 +112,10 @@ void connectMqtt() {
 void setup() {
 
   Serial.begin(115200);
+  
   pinMode(10, OUTPUT); // set the SS pin as an output (necessary!)
-  digitalWrite(10, LOW); // but turn off the W5100 chip!
- 
+  digitalWrite(10, HIGH); // but turn off the W5100 chip!
+
   for (uint8_t i = 0; i < ARRAY_SIZE(pins); i++) {
     pinMode(pins[i].pin, INPUT_PULLUP);
 
