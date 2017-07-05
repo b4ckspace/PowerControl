@@ -1,3 +1,5 @@
+#define MQTT_SOCKET_TIMEOUT 3
+
 #include <Ethernet.h>
 #include <TinyWebServer.h>
 #include <Bounce2.h>
@@ -6,13 +8,13 @@
 #include "settings.h"
 
 // RELAIS
-//        
+//
 // GPIO 22, 24, 26, 28, 30, 32, 34,36
 
 // DIGITAL IO
 //       1  2  3  4  5  6  7
 // GPIO 52,50,49,46,44,42,40
- 
+
 
 PubSubClient mqttClient;
 
@@ -27,6 +29,8 @@ TinyWebServer::PathHandler handlers[] = {
 
 TinyWebServer webServer = TinyWebServer(handlers, NULL);
 EthernetClient ethernetClient;
+long lastReconnectAttempt = 0;
+
 
 typedef struct {
   const char* route;
@@ -51,17 +55,18 @@ typedef struct {
   const char* valueDown;
   uint16_t debounceMs;
   Bounce *debouncer;
+  uint8_t outputGpio;
 } t_pinConfiguration;
 
 t_pinConfiguration pins[] = {
-  {48, "sensor/button/kitchen/main", "released", "pressed", 42, NULL},
-  {49, "sensor/button/kitchen/storage", "released", "pressed", 42, NULL}
+  {48, "sensor/button/kitchen/main", "released", "pressed", 42, NULL, 32},
+  {49, "sensor/button/kitchen/storage", "released", "pressed", 42, NULL, 28}
 };
 
 
 output_t* determineOutput(char* route) {
-  for (uint8_t i = 0; i < ARRAY_SIZE(outputs); i++) {    
-    if (strcasecmp(route, outputs[i].route) == 0) { 
+  for (uint8_t i = 0; i < ARRAY_SIZE(outputs); i++) {
+    if (strcasecmp(route, outputs[i].route) == 0) {
       return &outputs[i];
     }
   }
@@ -72,18 +77,18 @@ output_t* determineOutput(char* route) {
 void sendHttpOk(TinyWebServer& web_server) {
   web_server.send_error_code(200);
   web_server.send_content_type("text/plain");
-  web_server.end_headers();  
+  web_server.end_headers();
   web_server << F("OK");
 }
 
 bool relaisOnHandler(TinyWebServer& web_server) {
   char* filename = TinyWebServer::get_file_from_path(web_server.get_path());
   output_t* output = determineOutput(filename);
-  
+
   if (output) {
     digitalWrite(output->pin, HIGH);
   }
-  
+
   sendHttpOk(web_server);
 }
 
@@ -98,20 +103,22 @@ bool relaisOffHandler(TinyWebServer& web_server) {
   sendHttpOk(web_server);
 }
 
-void connectMqtt() {
-  if (!mqttClient.connected()) {
-    
-    if (mqttClient.connect(HOSTNAME, MQTT_TOPIC_LAST_WILL, 1, true, "disconnected")) {
-      Serial.println("MQTT connected");
-      mqttClient.publish(MQTT_TOPIC_LAST_WILL, "connected", true);
-    }
+bool mqttConnect() {
+  Serial.println("try mqtt Connect");
+  if (mqttClient.connect(HOSTNAME, MQTT_TOPIC_LAST_WILL, 1, true, "disconnected")) {
+    Serial.println("MQTT connected");
+    mqttClient.publish(MQTT_TOPIC_LAST_WILL, "connected", true);
+  } else {
+    Serial.println("Nope...");
   }
+  
+  return mqttClient.connected();
 }
 
 void setup() {
 
   Serial.begin(115200);
-  
+
   pinMode(10, OUTPUT); // set the SS pin as an output (necessary!)
   digitalWrite(10, HIGH); // but turn off the W5100 chip!
 
@@ -126,7 +133,7 @@ void setup() {
   for (uint8_t i = 0; i < ARRAY_SIZE(outputs); i++) {
     pinMode(outputs[i].pin, OUTPUT);
   }
-  
+
   Serial.println("Setup eth0");
   Ethernet.begin(mac);
 
@@ -135,23 +142,43 @@ void setup() {
 
   mqttClient.setClient(ethernetClient);
   mqttClient.setServer(MQTT_HOST, 1883);
-  
+
   webServer.begin();
 }
 
+void toggleGPIO(uint8_t gpio) {
+  if (gpio) {
+    digitalWrite(gpio, (digitalRead(gpio) == HIGH) ? LOW : HIGH);
+  }
+}
+
 void loop() {
-  
+
   for (uint8_t i = 0; i < ARRAY_SIZE(pins); i++) {
     pins[i].debouncer->update();
 
     if (pins[i].debouncer->rose()) {
       mqttClient.publish(pins[i].mqttTopic, pins[i].valueUp, true);
     } else if (pins[i].debouncer->fell()) {
+      toggleGPIO(pins[i].outputGpio);
       mqttClient.publish(pins[i].mqttTopic, pins[i].valueDown, true);
     }
   }
 
-  connectMqtt();
-  mqttClient.loop();
+  if (!mqttClient.connected()) {
+    long now = millis();
+    if (now - lastReconnectAttempt > 5000) {
+      lastReconnectAttempt = now;
+      // Attempt to reconnect
+      if (mqttConnect()) {
+        lastReconnectAttempt = 0;
+      }
+    }
+  } else {
+    mqttClient.loop();
+  }
+
   webServer.process();
+
 }
+
