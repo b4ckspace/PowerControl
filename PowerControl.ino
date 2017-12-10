@@ -1,7 +1,4 @@
-#define MQTT_SOCKET_TIMEOUT 3
-
 #include <Ethernet.h>
-#include <TinyWebServer.h>
 #include <Bounce2.h>
 #include <Flash.h>
 #include <PubSubClient.h>
@@ -15,37 +12,23 @@
 //       1  2  3  4  5  6  7
 // GPIO 52,50,49,46,44,42,40
 
-
 PubSubClient mqttClient;
-
-bool relaisOnHandler(TinyWebServer& web_server);
-bool relaisOffHandler(TinyWebServer& web_server);
-
-TinyWebServer::PathHandler handlers[] = {
-  {"/relais/" "*", TinyWebServer::POST, &relaisOnHandler },
-  {"/relais/" "*", TinyWebServer::DELETE, &relaisOffHandler },
-  {NULL},
-};
-
-TinyWebServer webServer = TinyWebServer(handlers, NULL);
 EthernetClient ethernetClient;
-long lastReconnectAttempt = 0;
-
 
 typedef struct {
-  const char* route;
+  const char* name;
   const uint8_t pin;
 } output_t;
 
 output_t outputs[] = {
-  { "kitchen_light", 32 },
-  { "podest_light", 34 },
-  { "canvas_light", 26 },
-  { "entry_light", 24 },
+  { "kitchen", 32 },
+  { "podest", 34 },
+  { "ceiling", 26 },
+  { "entry", 24 },
   { "oven", 22 },
   //{ "powersockets", 36 },
-  { "storage_light", 28 },
-  { "bar_light", 30 },
+  { "storage", 28 },
+  { "bar", 30 },
 };
 
 typedef struct {
@@ -63,10 +46,9 @@ t_pinConfiguration pins[] = {
   {49, "sensor/button/kitchen/storage", "released", "pressed", 42, NULL, 28}
 };
 
-
-output_t* determineOutput(char* route) {
+output_t* determineOutput(char* name) {
   for (uint8_t i = 0; i < ARRAY_SIZE(outputs); i++) {
-    if (strcasecmp(route, outputs[i].route) == 0) {
+    if (strcasecmp(name, outputs[i].name) == 0) {
       return &outputs[i];
     }
   }
@@ -74,45 +56,41 @@ output_t* determineOutput(char* route) {
   return NULL;
 }
 
-void sendHttpOk(TinyWebServer& web_server) {
-  web_server.send_error_code(200);
-  web_server.send_content_type("text/plain");
-  web_server.end_headers();
-  web_server << F("OK");
+void mqttConnect() {
+  while (!mqttClient.connected()) {
+    if (mqttClient.connect(HOSTNAME, MQTT_TOPIC_LAST_WILL, 1, true, "disconnected")) {
+      mqttClient.subscribe(MQTT_TOPIC_POWERCONTROL);
+      mqttClient.publish(MQTT_TOPIC_LAST_WILL, "connected", true);
+      Serial.println("Connected!");
+    } else {
+      Serial.println("MQTT connect failed!");
+      delay(1000);
+    }
+  }
 }
 
-bool relaisOnHandler(TinyWebServer& web_server) {
-  char* filename = TinyWebServer::get_file_from_path(web_server.get_path());
-  output_t* output = determineOutput(filename);
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
-  if (output) {
-    digitalWrite(output->pin, HIGH);
+  const char* onOff = (char*) payload;
+  const char* lastSegment = strrchr((char*) topic, '/');
+
+  Serial.println(topic);
+  if (lastSegment == NULL) {
+    return;
   }
 
-  sendHttpOk(web_server);
-}
+  output_t* output = determineOutput(lastSegment + 1);
+  if (output == NULL) {
+    return;
+  }
 
-bool relaisOffHandler(TinyWebServer& web_server) {
-  char* filename = TinyWebServer::get_file_from_path(web_server.get_path());
-  output_t* output = determineOutput(filename);
-
-  if (output) {
+  if (strncasecmp(onOff, "ON", length) == 0) {
+    Serial.println("ON!");
+    digitalWrite(output->pin, HIGH);
+  } else if (strncasecmp(onOff, "OFF", length) == 0) {
+    Serial.println("OFF!");
     digitalWrite(output->pin, LOW);
   }
-
-  sendHttpOk(web_server);
-}
-
-bool mqttConnect() {
-  Serial.println("try mqtt Connect");
-  if (mqttClient.connect(HOSTNAME, MQTT_TOPIC_LAST_WILL, 1, true, "disconnected")) {
-    Serial.println("MQTT connected");
-    mqttClient.publish(MQTT_TOPIC_LAST_WILL, "connected", true);
-  } else {
-    Serial.println("Nope...");
-  }
-  
-  return mqttClient.connected();
 }
 
 void setup() {
@@ -142,8 +120,7 @@ void setup() {
 
   mqttClient.setClient(ethernetClient);
   mqttClient.setServer(MQTT_HOST, 1883);
-
-  webServer.begin();
+  mqttClient.setCallback(mqttCallback);
 }
 
 void toggleGPIO(uint8_t gpio) {
@@ -165,20 +142,7 @@ void loop() {
     }
   }
 
-  if (!mqttClient.connected()) {
-    long now = millis();
-    if (now - lastReconnectAttempt > 5000) {
-      lastReconnectAttempt = now;
-      // Attempt to reconnect
-      if (mqttConnect()) {
-        lastReconnectAttempt = 0;
-      }
-    }
-  } else {
-    mqttClient.loop();
-  }
-
-  webServer.process();
-
+  mqttConnect();
+  mqttClient.loop();
 }
 
