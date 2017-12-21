@@ -38,12 +38,12 @@ typedef struct {
   const char* valueDown;
   uint16_t debounceMs;
   Bounce *debouncer;
-  uint8_t outputGpio;
+  const char* output;
 } t_pinConfiguration;
 
 t_pinConfiguration pins[] = {
-  {48, "sensor/button/kitchen/main", "released", "pressed", 42, NULL, 32},
-  {49, "sensor/button/kitchen/storage", "released", "pressed", 42, NULL, 28}
+  {48, "sensor/button/kitchen/main",    "released", "pressed", 20, NULL, "kitchen"},
+  {49, "sensor/button/kitchen/storage", "released", "pressed", 20, NULL, "storage"}
 };
 
 output_t* determineOutput(char* name) {
@@ -74,7 +74,6 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   const char* onOff = (char*) payload;
   const char* lastSegment = strrchr((char*) topic, '/');
 
-  Serial.println(topic);
   if (lastSegment == NULL) {
     return;
   }
@@ -85,10 +84,8 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   }
 
   if (strncasecmp(onOff, "ON", length) == 0) {
-    Serial.println("ON!");
     digitalWrite(output->pin, HIGH);
   } else if (strncasecmp(onOff, "OFF", length) == 0) {
-    Serial.println("OFF!");
     digitalWrite(output->pin, LOW);
   }
 }
@@ -123,21 +120,29 @@ void setup() {
   mqttClient.setCallback(mqttCallback);
 }
 
-void toggleGPIO(uint8_t gpio) {
-  if (gpio) {
-    digitalWrite(gpio, (digitalRead(gpio) == HIGH) ? LOW : HIGH);
+void toggleOutput(const char* name) {
+  const output_t* output = determineOutput(name);
+
+  if (output == NULL) {
+    return;
   }
+  
+  digitalWrite(output->pin, (digitalRead(output->pin) == HIGH) ? LOW : HIGH);
 }
 
 void loop() {
-
+  Ethernet.maintain();
+    
   for (uint8_t i = 0; i < ARRAY_SIZE(pins); i++) {
     pins[i].debouncer->update();
 
     if (pins[i].debouncer->rose()) {
       mqttClient.publish(pins[i].mqttTopic, pins[i].valueUp, true);
-    } else if (pins[i].debouncer->fell()) {
-      toggleGPIO(pins[i].outputGpio);
+    } else if (pins[i].debouncer->fell()) {     
+      if (pins[i].output) {
+        toggleOutput(pins[i].output);
+      }
+      
       mqttClient.publish(pins[i].mqttTopic, pins[i].valueDown, true);
     }
   }
