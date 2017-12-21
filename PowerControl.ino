@@ -92,6 +92,8 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
 void setup() {
 
+  delay(3000);
+
   Serial.begin(115200);
 
   pinMode(10, OUTPUT); // set the SS pin as an output (necessary!)
